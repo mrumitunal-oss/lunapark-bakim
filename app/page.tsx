@@ -2,114 +2,118 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** ====== Roller ====== */
+/** ================== Roller & Etiketler ================== */
 type Role =
   | "OPS"            // Operasyon Müdürü
   | "TECH_MANAGER"   // Teknik Müdür
-  | "SUPERVISOR"     // Supervisor
   | "TECH"           // Teknik Personel
+  | "SUPERVISOR"     // Supervisor
   | "OPERATOR";      // Operatör
 
-/** ====== Dil ====== */
 type Lang = "tr" | "en";
 
-/** ====== Tipler ====== */
-type UnitStatus = "Aktif" | "Kırmızı Etiket"; // aktif = yeşil, kırmızı etiket = servis dışı
+type UnitTag = "RED" | "BLUE" | "GREEN"; // Kırmızı / Mavi / Yeşil
+
 type Frequency = "daily" | "weekly" | "monthly" | "yearly";
 
+/** ================== Tipler ================== */
 type Unit = {
   id: number;
   name: string;
-  status: UnitStatus;
-  year?: string;
+  tag: UnitTag;            // RED/MAVI/GREEN
   manufacturer?: string;
-  ndtDate?: string; // YYYY-MM-DD
-  imageDataUrl?: string; // base64 (yerel depoda)
+  year?: string;
+  ndtDate?: string;        // YYYY-MM-DD
+  imageDataUrl?: string;
 };
 
-type ChecklistItem = { id: number; titleTR: string; titleEN: string };
-type ChecklistState = { id: number; checked: boolean };
+type ChecklistItem = { id: number; tr: string; en: string };
+type ChecklistTick = { id: number; checked: boolean };
 
-type MaintenanceLog = {
+type MaintenanceSign = {
   unitId: number;
   frequency: Frequency;
-  date: string; // YYYY-MM-DD
-  items: ChecklistState[];
-  notes?: string; // kullanılan parça vb. kısa not
+  date: string;            // YYYY-MM-DD
+  items: ChecklistTick[];
+  notes?: string;          // parça/iş notu
+  signedBy: string;
+  role: "TECH" | "TECH_MANAGER" | "OPS";
+  signedAt: string;        // ISO
 };
 
 type OpeningSign = {
   unitId: number;
-  date: string;   // YYYY-MM-DD
+  date: string;            // YYYY-MM-DD
   role: "SUPERVISOR" | "OPERATOR";
-  name: string;   // imzalayanın adı (şimdilik serbest metin)
+  name: string;
+  signedAt: string;        // ISO
 };
 
-type TechNote = {
+type Incident = {
   id: string;
   unitId: number;
-  date: string;
-  from: "OPS" | "TECH_MANAGER"; // kim yazdı
-  text: string;                 // soru/not
-  reply?: { date: string; text: string }; // Teknik Müdür cevabı
+  openedBy: "OPERATOR" | "TECH" | "SUPERVISOR";
+  openedAt: string;        // ISO
+  // kapanınca:
+  closedAt?: string;       // ISO
+  cause?: string;          // arıza nedeni
+  fix?: string;            // yapılan işlem
+  reopened?: boolean;
 };
 
 type Store = {
   lang: Lang;
   role: Role;
   units: Unit[];
-  // şablon (varsayılan form maddeleri) – tüm ünitelerde aynı temel şablon
   templates: Record<Frequency, ChecklistItem[]>;
-  logs: MaintenanceLog[];       // teknik bakım işaretlemeleri
-  openings: OpeningSign[];      // açılış imzaları (supervisor/operator)
-  techNotes: TechNote[];        // not/soru-cevap
+  maintenance: MaintenanceSign[]; // teknik imza kayıtları
+  openings: OpeningSign[];        // supervisor & operator imzaları
+  incidents: Incident[];          // arıza akışı
 };
 
-/** ====== LS anahtarı ====== */
-const LS_KEY = "lunapark_bakim_store_v2";
+/** ================== Varsayılanlar ================== */
+const LS_KEY = "lp_maintenance_v1";
 
-/** ====== Varsayılanlar ====== */
 const DEFAULT_UNITS: Unit[] = [
-  { id: 1, name: "Dönme Dolap", status: "Aktif", year: "2021", manufacturer: "SBF/Visa" },
-  { id: 2, name: "Çarpışan Arabalar", status: "Aktif", year: "2019", manufacturer: "IE Park" },
-  { id: 3, name: "Gondol", status: "Kırmızı Etiket", year: "2017", manufacturer: "Fabbri" },
+  { id: 1, name: "Dönme Dolap", tag: "RED", manufacturer: "SBF", year: "2021" },
+  { id: 2, name: "Çarpışan Arabalar", tag: "RED", manufacturer: "IE Park", year: "2019" },
+  { id: 3, name: "Gondol", tag: "RED", manufacturer: "Fabbri", year: "2017" },
 ];
 
-// Basit şablon maddeleri (TR/EN)
-const TEMPLATE_DAILY: ChecklistItem[] = [
-  { id: 1, titleTR: "Emniyet kemerleri/Barlar kontrol edildi", titleEN: "Restraints checked" },
-  { id: 2, titleTR: "Operatör paneli test edildi",            titleEN: "Operator panel tested" },
-  { id: 3, titleTR: "Alan güvenliği sağlandı",                 titleEN: "Area secured" },
+const TPL_DAILY: ChecklistItem[] = [
+  { id: 1, tr: "Emniyet barları ve kilitleri kontrol edildi", en: "Restraints and locks checked" },
+  { id: 2, tr: "Operatör paneli test edildi",                en: "Operator panel tested" },
+  { id: 3, tr: "Alan güvenliği ve bariyerler kontrol edildi", en: "Area safety & barriers checked" },
 ];
-const TEMPLATE_WEEKLY: ChecklistItem[] = [
-  { id: 11, titleTR: "Cıvata ve bağlantılar tork kontrolü",   titleEN: "Bolts & fasteners torque" },
-  { id: 12, titleTR: "Zincir/Kayış görsel kontrol",            titleEN: "Chain/belt visual check" },
+const TPL_WEEKLY: ChecklistItem[] = [
+  { id: 11, tr: "Cıvata ve bağlantı tork kontrolü",           en: "Bolts & fasteners torque check" },
+  { id: 12, tr: "Tahrik elemanları görsel kontrol",           en: "Drive elements visual check" },
 ];
-const TEMPLATE_MONTHLY: ChecklistItem[] = [
-  { id: 21, titleTR: "Yağlama ve gres noktaları",              titleEN: "Lubrication/grease points" },
-  { id: 22, titleTR: "Elektrik pano bağlantı kontrolü",        titleEN: "Electrical cabinet check" },
+const TPL_MONTHLY: ChecklistItem[] = [
+  { id: 21, tr: "Yağlama (katalog referanslı)",               en: "Lubrication per manual" },
+  { id: 22, tr: "Elektrik pano terminal sıkılık kontrolü",    en: "Electrical terminals tightness" },
 ];
-const TEMPLATE_YEARLY: ChecklistItem[] = [
-  { id: 31, titleTR: "Yıllık genel bakım",                     titleEN: "Annual general maintenance" },
-  { id: 32, titleTR: "Kapsamlı emniyet testleri",              titleEN: "Comprehensive safety tests" },
+const TPL_YEARLY: ChecklistItem[] = [
+  { id: 31, tr: "Yıllık genel bakım prosedürü",               en: "Annual general procedure" },
+  { id: 32, tr: "Kapsamlı emniyet testleri",                  en: "Comprehensive safety tests" },
 ];
 
 const DEFAULT_STORE: Store = {
   lang: "tr",
-  role: "TECH", // başlangıç: teknik personel
+  role: "TECH",
   units: DEFAULT_UNITS,
   templates: {
-    daily: TEMPLATE_DAILY,
-    weekly: TEMPLATE_WEEKLY,
-    monthly: TEMPLATE_MONTHLY,
-    yearly: TEMPLATE_YEARLY,
+    daily: TPL_DAILY,
+    weekly: TPL_WEEKLY,
+    monthly: TPL_MONTHLY,
+    yearly: TPL_YEARLY,
   },
-  logs: [],
+  maintenance: [],
   openings: [],
-  techNotes: [],
+  incidents: [],
 };
 
-/** ====== Yardımcılar ====== */
+/** ================== Yardımcılar ================== */
 const todayStr = () => {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -117,10 +121,28 @@ const todayStr = () => {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 };
+const nowISO = () => new Date().toISOString();
 
 const t = (lang: Lang, tr: string, en: string) => (lang === "tr" ? tr : en);
 
-/** ====== LocalStorage ====== */
+const tagLabel = (lang: Lang, tag: UnitTag) =>
+  tag === "GREEN" ? t(lang, "Yeşil (Aktif)", "Green (Active)")
+  : tag === "BLUE" ? t(lang, "Mavi (Bakım Sürüyor)", "Blue (Maintenance)")
+  : t(lang, "Kırmızı (Kapalı)", "Red (Closed)");
+
+const tagClass =
+  (tag: UnitTag) =>
+    tag === "GREEN" ? "bg-green-100 text-green-700"
+    : tag === "BLUE" ? "bg-blue-100 text-blue-700"
+    : "bg-red-100 text-red-700";
+
+/** ================== Yetkiler ================== */
+const canSeeAll = (r: Role) => r === "OPS" || r === "TECH_MANAGER";
+const canEditMeta = (r: Role) => r === "OPS" || r === "TECH_MANAGER";
+const canTechnical = (r: Role) => r === "TECH" || r === "TECH_MANAGER" || r === "OPS";
+const canOpening = (r: Role) => r === "SUPERVISOR" || r === "OPERATOR";
+
+/** ================== LocalStorage ================== */
 const loadStore = (): Store => {
   try {
     if (typeof window === "undefined") return DEFAULT_STORE;
@@ -128,643 +150,648 @@ const loadStore = (): Store => {
     if (!raw) throw new Error("empty");
     const parsed = JSON.parse(raw) as Partial<Store>;
     return {
-      lang: parsed.lang ?? "tr",
-      role: parsed.role ?? "TECH",
-      units: parsed.units ?? DEFAULT_UNITS,
+      lang: parsed.lang ?? DEFAULT_STORE.lang,
+      role: parsed.role ?? DEFAULT_STORE.role,
+      units: parsed.units ?? DEFAULT_STORE.units,
       templates: parsed.templates ?? DEFAULT_STORE.templates,
-      logs: parsed.logs ?? [],
+      maintenance: parsed.maintenance ?? [],
       openings: parsed.openings ?? [],
-      techNotes: parsed.techNotes ?? [],
+      incidents: parsed.incidents ?? [],
     };
   } catch {
     return DEFAULT_STORE;
   }
 };
-
-const saveStore = (store: Store) => {
+const saveStore = (s: Store) => {
   if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(store));
+    localStorage.setItem(LS_KEY, JSON.stringify(s));
   } catch {}
 };
 
-/** ====== İzinler ====== */
-const canEditUnitMeta = (role: Role) => role === "OPS" || role === "TECH_MANAGER";
-const canSeeAll = (role: Role) => role === "OPS" || role === "TECH_MANAGER";
-const canDoTechnical = (role: Role) => role === "TECH" || role === "TECH_MANAGER" || role === "OPS";
-const canDoOpening = (role: Role) => role === "SUPERVISOR" || role === "OPERATOR";
-
-/** ====== Sayfa ====== */
+/** ================== Sayfa ================== */
 export default function Page() {
-  // SSR güvenliği
   const [mounted, setMounted] = useState(false);
-
-  // Depo
   const [store, setStore] = useState<Store>(DEFAULT_STORE);
 
-  // UI state
-  const [activeUnitId, setActiveUnitId] = useState<number | null>(null); // detay paneli
-  const [freq, setFreq] = useState<Frequency>("daily"); // aktif bakım sekmesi
-  const [openingSigner, setOpeningSigner] = useState<string>(""); // imza adı
+  const [activeUnitId, setActiveUnitId] = useState<number | null>(null);
+  const [freq, setFreq] = useState<Frequency>("daily");
 
-  const [imgFile, setImgFile] = useState<File | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
+  // teknik imza çizelgesi (geçici UI state)
+  const [ticks, setTicks] = useState<ChecklistTick[]>([]);
+  const [techNotes, setTechNotes] = useState("");
+  const [techSigner, setTechSigner] = useState("");
 
-  // Mount
+  // opening (supervisor/operator)
+  const [openerName, setOpenerName] = useState("");
+
+  // arıza
+  const [incidentCause, setIncidentCause] = useState("");
+  const [incidentFix, setIncidentFix] = useState("");
+
+  // foto upload
+  const imgInput = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     setMounted(true);
     setStore(loadStore());
   }, []);
-
-  // Persist
   useEffect(() => {
     if (!mounted) return;
     saveStore(store);
   }, [store, mounted]);
 
   const day = useMemo(() => todayStr(), []);
-
   const activeUnit = useMemo(
     () => store.units.find((u) => u.id === activeUnitId) ?? null,
     [store.units, activeUnitId]
   );
 
-  /** === Dil ve Rol değişimi === */
-  const switchLang = () =>
-    setStore((s) => ({ ...s, lang: s.lang === "tr" ? "en" : "tr" }));
+  /** =========== Dil / Rol =========== */
+  const switchLang = () => setStore((s) => ({ ...s, lang: s.lang === "tr" ? "en" : "tr" }));
+  const changeRole = (r: Role) => setStore((s) => ({ ...s, role: r }));
 
-  const setRole = (r: Role) => setStore((s) => ({ ...s, role: r }));
+  /** =========== Görünecek üniteler (Supervisor/Operator ise sadece GREEN/Mavi?) =========== */
+  const visibleUnits = useMemo(() => {
+    if (canSeeAll(store.role) || store.role === "TECH") return store.units;
+    // Supervisor & Operator: sahada genellikle açılış öncesi de bakar;
+    // isteğe göre yalnız RED dışlanabilir; burada tüm üniteleri gösterelim ama açılış imzasını sadece GREEN’de değil, "teknik onay sonrası" çalıştıracağız.
+    return store.units;
+  }, [store.units, store.role]);
 
-  /** === Ünite adı/status/meta güncelleme (yalnız OPS + TECH_MANAGER) === */
-  const updateUnit = (patch: Partial<Unit>) => {
+  /** =========== Ünite meta güncelleme (OPS & TECH_MANAGER) =========== */
+  const patchUnit = (patch: Partial<Unit>) => {
     if (!activeUnit) return;
     setStore((s) => ({
       ...s,
-      units: s.units.map((u) =>
-        u.id === activeUnit.id ? { ...u, ...patch } : u
-      ),
+      units: s.units.map((u) => (u.id === activeUnit.id ? { ...u, ...patch } : u)),
     }));
   };
 
-  /** === Görsel yükleme (base64) === */
-  const onImageChoose = async (file: File) => {
+  /** =========== Foto yükleme (base64) =========== */
+  const onChooseImage = (f: File) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      updateUnit({ imageDataUrl: reader.result as string });
-    };
-    reader.readAsDataURL(file);
+    reader.onload = () => patchUnit({ imageDataUrl: reader.result as string });
+    reader.readAsDataURL(f);
   };
 
-  /** === Bakım formu maddelerini getir (şablon) === */
-  const templateItems = useMemo(() => store.templates[freq] ?? [], [store.templates, freq]);
-
-  /** === Bu ünite + bu freq + bugün için state === */
-  const currentLog = useMemo<MaintenanceLog | null>(() => {
+  /** =========== Checklists (şablon) =========== */
+  const template = store.templates[freq] ?? [];
+  // activeUnit + freq + today için mevcut imza var mı?
+  const existingSign = useMemo(() => {
     if (!activeUnit) return null;
-    const found = (store.logs || []).find(
-      (l) => l.unitId === activeUnit.id && l.frequency === freq && l.date === day
-    );
-    if (found) return found;
-    // yoksa varsayılan boş state
-    return {
+    return store.maintenance.find(
+      (m) => m.unitId === activeUnit.id && m.frequency === freq && m.date === day
+    ) ?? null;
+  }, [store.maintenance, activeUnit, freq, day]);
+
+  // panel açılınca/sekme değişince checkbox state yenile
+  useEffect(() => {
+    if (!activeUnit) return;
+    if (existingSign) {
+      setTicks(existingSign.items);
+      setTechNotes(existingSign.notes ?? "");
+      setTechSigner(existingSign.signedBy);
+    } else {
+      setTicks(template.map((i) => ({ id: i.id, checked: false })));
+      setTechNotes("");
+      setTechSigner("");
+    }
+  }, [activeUnitId, freq, existingSign, template]);
+
+  /** =========== Teknik bakım imzası =========== */
+  const signTechnical = () => {
+    if (!activeUnit) return;
+    if (!canTechnical(store.role)) {
+      alert(t(store.lang, "Yetkiniz yok.", "Not allowed."));
+      return;
+    }
+    if (!techSigner.trim()) {
+      alert(t(store.lang, "İmza (ad) giriniz.", "Enter signer name."));
+      return;
+    }
+    const sign: MaintenanceSign = {
       unitId: activeUnit.id,
       frequency: freq,
       date: day,
-      items: templateItems.map((i) => ({ id: i.id, checked: false })),
-      notes: "",
+      items: ticks,
+      notes: techNotes || undefined,
+      signedBy: techSigner.trim(),
+      role: (store.role === "TECH" ? "TECH" : store.role === "TECH_MANAGER" ? "TECH_MANAGER" : "OPS"),
+      signedAt: nowISO(),
     };
-  }, [store.logs, activeUnit, freq, day, templateItems]);
-
-  /** === Teknik bakım kaydet (yalnız TECH/TECH_MANAGER/OPS) === */
-  const saveMaintenance = () => {
-    if (!activeUnit || !currentLog) return;
-    if (!canDoTechnical(store.role)) {
-      alert(t(store.lang, "Bu işlem için yetkiniz yok.", "You are not allowed to perform this action."));
-      return;
-    }
     setStore((s) => {
-      const others = s.logs.filter(
-        (l) =>
-          !(
-            l.unitId === currentLog.unitId &&
-            l.frequency === currentLog.frequency &&
-            l.date === currentLog.date
-          )
+      // aynı gün & freq kaydını değiştir
+      const others = s.maintenance.filter(
+        (m) => !(m.unitId === sign.unitId && m.frequency === sign.frequency && m.date === sign.date)
       );
-      return { ...s, logs: [...others, currentLog] };
+      return { ...s, maintenance: [sign, ...others] };
     });
-    alert(t(store.lang, "Kayıt edildi.", "Saved."));
+    // Teknik ekip YEŞİL / MAVİ etiketi belirleyebilir:
+    if (freq === "daily" || freq === "weekly") {
+      // günlük/haftalık tamamladıysa mavi veya yeşile alma kararı teknik ekipte
+      // burada basit bir kural: tüm maddeler işaretli ise GREEN, değilse BLUE.
+      const allOk = ticks.every((x) => x.checked);
+      patchUnit({ tag: allOk ? "GREEN" : "BLUE" });
+    }
+    alert(t(store.lang, "Teknik imza kaydedildi.", "Technical sign saved."));
   };
 
-  /** === Açılış kontrol imzası (Supervisor/Operator) — yalnız Aktif ünite === */
+  /** =========== Açılış (Supervisor & Operator) =========== */
+  const canOpenNow = activeUnit
+    ? activeUnit.tag === "GREEN" // teknik onaydan sonra
+    : false;
+
   const signOpening = () => {
     if (!activeUnit) return;
-    if (!canDoOpening(store.role)) {
-      alert(t(store.lang, "Bu işlem için yetkiniz yok.", "You are not allowed to perform this action."));
+    if (!canOpening(store.role)) {
+      alert(t(store.lang, "Yetkiniz yok.", "Not allowed."));
       return;
     }
-    if (activeUnit.status !== "Aktif") {
-      alert(t(store.lang, "Ünite aktif olmadan imza atılamaz.", "Cannot sign opening while unit is not Active."));
+    if (!canOpenNow) {
+      alert(t(store.lang, "Teknik onay (Yeşil) olmadan imzalanamaz.", "Cannot sign before technical approval (Green)."));
       return;
     }
-    if (!openingSigner.trim()) {
-      alert(t(store.lang, "İmza ismi giriniz.", "Enter signer name."));
+    if (!openerName.trim()) {
+      alert(t(store.lang, "İmzalayan adı giriniz.", "Enter signer name."));
       return;
     }
-    setStore((s) => ({
-      ...s,
-      openings: [
-        ...s.openings,
-        {
-          unitId: activeUnit.id,
-          date: day,
-          role: store.role as "SUPERVISOR" | "OPERATOR",
-          name: openingSigner.trim(),
-        },
-      ],
-    }));
-    setOpeningSigner("");
-    alert(t(store.lang, "İmza alındı.", "Signed."));
-  };
-
-  /** === Not/Soru (OPS & TECH_MANAGER yazar) — Cevap (TECH_MANAGER) === */
-  const [noteDraft, setNoteDraft] = useState("");
-  const [replyDraft, setReplyDraft] = useState("");
-
-  const addNote = () => {
-    if (!activeUnit) return;
-    if (!(store.role === "OPS" || store.role === "TECH_MANAGER")) {
-      alert(t(store.lang, "Not ekleme yetkiniz yok.", "You cannot add notes."));
-      return;
-    }
-    const newNote: TechNote = {
-      id: `${activeUnit.id}-${Date.now()}`,
+    const rec: OpeningSign = {
       unitId: activeUnit.id,
       date: day,
-      from: store.role === "OPS" ? "OPS" : "TECH_MANAGER",
-      text: noteDraft.trim(),
+      role: store.role as "SUPERVISOR" | "OPERATOR",
+      name: openerName.trim(),
+      signedAt: nowISO(),
     };
-    if (!newNote.text) return;
-    setStore((s) => ({ ...s, techNotes: [newNote, ...s.techNotes] }));
-    setNoteDraft("");
+    setStore((s) => ({ ...s, openings: [rec, ...s.openings] }));
+    setOpenerName("");
+    alert(t(store.lang, "Açılış imzası alındı.", "Opening signed."));
   };
 
-  const answerNote = (noteId: string) => {
-    if (store.role !== "TECH_MANAGER") {
-      alert(t(store.lang, "Cevaplama yetkiniz yok.", "You cannot answer."));
+  const todaysOpenings = useMemo(() => {
+    if (!activeUnit) return { sup: null as OpeningSign | null, op: null as OpeningSign | null };
+    const sup = store.openings.find((o) => o.unitId === activeUnit.id && o.date === day && o.role === "SUPERVISOR") ?? null;
+    const op = store.openings.find((o) => o.unitId === activeUnit.id && o.date === day && o.role === "OPERATOR") ?? null;
+    return { sup, op };
+  }, [store.openings, activeUnit, day]);
+
+  /** =========== Arıza akışı =========== */
+  const unitIncidents = useMemo(
+    () => (activeUnit ? store.incidents.filter((i) => i.unitId === activeUnit.id) : []),
+    [store.incidents, activeUnit]
+  );
+  const hasOpenIncident = unitIncidents.some((i) => !i.closedAt);
+
+  const openIncident = () => {
+    if (!activeUnit) return;
+    if (!(store.role === "OPERATOR" || store.role === "SUPERVISOR" || store.role === "TECH")) {
+      alert(t(store.lang, "Arıza açma yetkiniz yok.", "You cannot open incidents."));
       return;
     }
-    const msg = replyDraft.trim();
-    if (!msg) return;
+    if (hasOpenIncident) {
+      alert(t(store.lang, "Zaten açık arıza var.", "Incident already open."));
+      return;
+    }
+    const inc: Incident = {
+      id: `${activeUnit.id}-${Date.now()}`,
+      unitId: activeUnit.id,
+      openedBy: (store.role as any),
+      openedAt: nowISO(),
+    };
+    // arıza açılınca ünite otomatik KIRMIZI
+    patchUnit({ tag: "RED" });
+    setStore((s) => ({ ...s, incidents: [inc, ...s.incidents] }));
+    alert(t(store.lang, "Arıza açıldı.", "Incident opened."));
+  };
+
+  const closeIncident = () => {
+    if (!activeUnit) return;
+    if (!canTechnical(store.role)) {
+      alert(t(store.lang, "Arıza kapatma yetkiniz yok.", "You cannot close incidents."));
+      return;
+    }
+    const open = unitIncidents.find((i) => !i.closedAt);
+    if (!open) {
+      alert(t(store.lang, "Açık arıza yok.", "No open incident."));
+      return;
+    }
+    // teknik kapanış: neden + çözüm zorunlu
+    if (!incidentCause.trim() || !incidentFix.trim()) {
+      alert(t(store.lang, "Neden ve çözüm yazınız.", "Fill in cause and fix."));
+      return;
+    }
     setStore((s) => ({
       ...s,
-      techNotes: s.techNotes.map((n) =>
-        n.id === noteId ? { ...n, reply: { date: day, text: msg } } : n
+      incidents: s.incidents.map((i) =>
+        i.id === open.id ? { ...i, closedAt: nowISO(), cause: incidentCause.trim(), fix: incidentFix.trim() } : i
       ),
     }));
-    setReplyDraft("");
+    // kapanınca etiketi MAVİ yap, teknik tekrar GREEN’e alır (güvenli akış)
+    patchUnit({ tag: "BLUE" });
+    setIncidentCause("");
+    setIncidentFix("");
+    alert(t(store.lang, "Arıza kapatıldı (teknik tekrar onaylamalı).", "Incident closed (requires technical re-approval)."));
   };
 
-  /** === Ünite detay paneli görünürlüğü === */
-  const closeDetail = () => {
-    setActiveUnitId(null);
-    setFreq("daily");
-    setOpeningSigner("");
-    setNoteDraft("");
-    setReplyDraft("");
-    setImgFile(null);
+  /** =========== Yedek / Geri Yükle / Sıfırla =========== */
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `lunapark-bakim-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const importJSON = async (f: File) => {
+    try {
+      const text = await f.text();
+      const parsed = JSON.parse(text) as Partial<Store>;
+      const next: Store = {
+        lang: parsed.lang ?? "tr",
+        role: parsed.role ?? "TECH",
+        units: parsed.units ?? DEFAULT_UNITS,
+        templates: parsed.templates ?? DEFAULT_STORE.templates,
+        maintenance: parsed.maintenance ?? [],
+        openings: parsed.openings ?? [],
+        incidents: parsed.incidents ?? [],
+      };
+      setStore(next);
+      alert(t(store.lang, "Veri içe aktarıldı.", "Data imported."));
+    } catch (e: any) {
+      alert("Import error: " + (e?.message || e));
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+  const resetAll = () => {
+    if (!confirm(t(store.lang, "Tüm veriler sıfırlansın mı?", "Reset all data?"))) return;
+    setStore(DEFAULT_STORE);
   };
 
-  /** === Filtre: Rol görünürlüğü ===
-   *  - OPS & TECH_MANAGER: tümünü görür
-   *  - TECH: tüm teknik verilere erişebilir (isteğe göre tüm üniteleri görür)
-   *  - SUPERVISOR/OPERATOR: sadece aktif üniteleri görmek daha mantıklı
-   */
-  const visibleUnits = useMemo(() => {
-    if (canSeeAll(store.role) || store.role === "TECH") return store.units;
-    // Supervisor/Operator: sadece Aktif olanlar
-    return store.units.filter((u) => u.status === "Aktif");
-  }, [store.units, store.role]);
-
-  /** === UI metinleri === */
-  const L = {
-    title: t(store.lang, "Lunapark Bakım Yazılımı – Lite", "Amusement Park Maintenance – Lite"),
-    rides: t(store.lang, "Üniteler / Rides", "Units / Rides"),
-    daily: t(store.lang, "Günlük Bakımlar", "Daily Maintenance"),
-    weekly: t(store.lang, "Haftalık Bakımlar", "Weekly Maintenance"),
-    monthly: t(store.lang, "Aylık Bakımlar", "Monthly Maintenance"),
-    yearly: t(store.lang, "Yıllık Bakımlar", "Yearly Maintenance"),
-    ndt: t(store.lang, "NDT Test Tarihi", "NDT Test Date"),
-    save: t(store.lang, "Kaydet", "Save"),
-    notes: t(store.lang, "Not/Soru", "Note/Question"),
-    reply: t(store.lang, "Cevap", "Reply"),
-    addNote: t(store.lang, "Not Ekle", "Add Note"),
-    answer: t(store.lang, "Cevapla", "Answer"),
-    opening: t(store.lang, "Operasyon Açılış Kontrolü", "Operational Opening Check"),
-    signerName: t(store.lang, "İmzalayan isim", "Signer name"),
-    sign: t(store.lang, "İmzala", "Sign"),
-    active: t(store.lang, "Aktif", "Active"),
-    redTag: t(store.lang, "Kırmızı Etiket", "Red Tag"),
-    unitMeta: t(store.lang, "Ünite Künyesi", "Unit Info"),
-    manufacturer: t(store.lang, "Üretici", "Manufacturer"),
-    year: t(store.lang, "Üretim Yılı", "Year of Manufacture"),
-    photo: t(store.lang, "Ünite Fotoğrafı", "Unit Photo"),
-    changePhoto: t(store.lang, "Fotoğraf Yükle", "Upload Photo"),
-    openDetail: t(store.lang, "Detay", "Detail"),
-    roleLabel: t(store.lang, "Rol", "Role"),
-    langLabel: t(store.lang, "Dil", "Language"),
-    status: t(store.lang, "Durum", "Status"),
-    checklist: t(store.lang, "Form Maddeleri", "Checklist"),
-    usedParts: t(store.lang, "Kullanılan Yedek Parça (not)", "Used Spare (note)"),
-    cannotOpenWhenRed: t(store.lang, "Kırmızı etiketli ünitede açılış imzası atılamaz.", "Cannot sign opening on Red-Tagged unit."),
-    needsActiveForSupervisor: t(store.lang, "Supervisor kontrolü için ünite Aktif olmalıdır.", "Unit must be Active for Supervisor check."),
-  };
-
-  /** === SSR skeleton === */
+  /** =========== SSR iskelet =========== */
   if (!mounted) {
     return (
       <div className="min-h-screen bg-gray-50 p-4 font-sans">
-        <h1 className="text-2xl font-bold text-blue-700">{L.title}</h1>
+        <h1 className="text-2xl font-bold text-blue-700">Lunapark Bakım Yazılımı – Saha Akışı v1</h1>
         <div className="mt-3 bg-white border rounded p-4 text-gray-500">Yükleniyor / Loading…</div>
       </div>
     );
   }
 
+  /** =========== UI Metinleri =========== */
+  const L = {
+    title: t(store.lang, "Lunapark Bakım Yazılımı – Saha Akışı v1", "Amusement Park Maintenance – Field Flow v1"),
+    today: t(store.lang, "Bugün", "Today"),
+    lang: t(store.lang, "Dil", "Language"),
+    role: t(store.lang, "Rol", "Role"),
+    rides: t(store.lang, "Üniteler", "Units"),
+    detail: t(store.lang, "Detay", "Detail"),
+    unitInfo: t(store.lang, "Ünite Künyesi", "Unit Info"),
+    manufacturer: t(store.lang, "Üretici", "Manufacturer"),
+    year: t(store.lang, "Üretim Yılı", "Year"),
+    ndt: t(store.lang, "NDT Test Tarihi", "NDT Test Date"),
+    photo: t(store.lang, "Ünite Fotoğrafı", "Unit Photo"),
+    upload: t(store.lang, "Fotoğraf Yükle", "Upload Photo"),
+    status: t(store.lang, "Etiket", "Tag"),
+    tabs: {
+      technical: t(store.lang, "Teknik Bakım", "Technical Maintenance"),
+      opening: t(store.lang, "Operasyon Açılış", "Operational Opening"),
+      incident: t(store.lang, "Arıza", "Incident"),
+      history: t(store.lang, "Geçmiş", "History"),
+    },
+    freq: {
+      daily: t(store.lang, "Günlük", "Daily"),
+      weekly: t(store.lang, "Haftalık", "Weekly"),
+      monthly: t(store.lang, "Aylık", "Monthly"),
+      yearly: t(store.lang, "Yıllık", "Yearly"),
+    },
+    checklist: t(store.lang, "Form Maddeleri", "Checklist"),
+    notes: t(store.lang, "Not / Parça Notu", "Note / Spare Note"),
+    signer: t(store.lang, "İmzalayan Adı", "Signer Name"),
+    signTech: t(store.lang, "Teknik İmzala", "Technical Sign"),
+    needsGreen: t(store.lang, "Teknik onay (Yeşil) olmadan imzalanamaz.", "Cannot sign before Green."),
+    openerName: t(store.lang, "İmzalayan Adı", "Signer Name"),
+    signOpen: t(store.lang, "Açılış İmzası", "Opening Sign"),
+    openIncident: t(store.lang, "Arıza Aç", "Open Incident"),
+    cause: t(store.lang, "Arıza Nedeni", "Cause"),
+    fix: t(store.lang, "Yapılan İşlem / Çözüm", "Fix / Action"),
+    closeIncident: t(store.lang, "Arızayı Kapat", "Close Incident"),
+    noOpenIncident: t(store.lang, "Açık arıza yok.", "No open incident."),
+    export: t(store.lang, "Yedekle (JSON)", "Export (JSON)"),
+    import: t(store.lang, "Geri Yükle", "Import"),
+    reset: t(store.lang, "Sıfırla", "Reset"),
+  };
+
+  /** =========== Görsel Katman =========== */
+  const [tab, setTab] = useState<"technical" | "opening" | "incident" | "history">("technical");
+
   return (
     <div className="min-h-screen bg-gray-50 p-4 font-sans">
-      {/* Üst header */}
+      {/* Header */}
       <header className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-blue-700">{L.title}</h1>
-          <div className="text-sm text-gray-600">
-            {t(store.lang, "Bugün", "Today")}: {day}
-          </div>
+          <div className="text-sm text-gray-600">{L.today}: {day}</div>
         </div>
-
         <div className="flex flex-wrap items-center gap-2">
-          {/* Dil */}
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">{L.langLabel}:</span>
-            <button
-              className="px-2 py-1 rounded bg-gray-200"
-              onClick={switchLang}
-              title="TR/EN"
-            >
+            <span className="text-sm text-gray-600">{L.lang}:</span>
+            <button className="px-2 py-1 rounded bg-gray-200" onClick={switchLang}>
               {store.lang.toUpperCase()}
             </button>
           </div>
-
-          {/* Rol seçimi */}
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">{L.roleLabel}:</span>
-            <select
-              className="border rounded p-1"
-              value={store.role}
-              onChange={(e) => setRole(e.target.value as Role)}
-            >
+            <span className="text-sm text-gray-600">{L.role}:</span>
+            <select className="border rounded p-1" value={store.role} onChange={(e) => changeRole(e.target.value as Role)}>
               <option value="OPS">Ops.Müdürü</option>
               <option value="TECH_MANAGER">Teknik Müdür</option>
-              <option value="SUPERVISOR">Supervisor</option>
               <option value="TECH">Teknik Personel</option>
+              <option value="SUPERVISOR">Supervisor</option>
               <option value="OPERATOR">Operatör</option>
             </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="px-3 py-1 rounded bg-gray-200" onClick={exportJSON}>⬇ {L.export}</button>
+            <button className="px-3 py-1 rounded bg-gray-200" onClick={() => fileRef.current?.click()}>⬆ {L.import}</button>
+            <input ref={fileRef} type="file" accept="application/json" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) importJSON(f); }} />
+            <button className="px-3 py-1 rounded bg-amber-500 text-white" onClick={resetAll}>♻ {L.reset}</button>
           </div>
         </div>
       </header>
 
-      {/* Üniteler listesi */}
+      {/* Üniteler */}
       <section className="mb-4">
         <h2 className="text-xl font-semibold mb-2">{L.rides}</h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {visibleUnits.map((u) => (
             <div key={u.id} className="bg-white border rounded p-3">
-              {u.imageDataUrl && (
-                <img
-                  src={u.imageDataUrl}
-                  alt={u.name}
-                  className="w-full h-32 object-cover rounded mb-2"
-                />
+              {u.imageDataUrl ? (
+                <img src={u.imageDataUrl} alt={u.name} className="w-full h-32 object-cover rounded mb-2" />
+              ) : (
+                <div className="w-full h-32 bg-gray-100 rounded mb-2 grid place-items-center text-gray-400">No Photo</div>
               )}
               <div className="font-semibold">{u.name}</div>
-              <div className="text-sm">
-                {L.status}:{" "}
-                <b className={u.status === "Aktif" ? "text-green-700" : "text-red-700"}>
-                  {u.status}
-                </b>
+              <div className={`inline-block text-xs mt-1 px-2 py-0.5 rounded ${tagClass(u.tag)}`}>
+                {tagLabel(store.lang, u.tag)}
               </div>
-              <button
-                className="mt-2 px-3 py-1 rounded bg-blue-600 text-white"
-                onClick={() => setActiveUnitId(u.id)}
-              >
-                {L.openDetail}
+              <button className="mt-2 px-3 py-1 rounded bg-blue-600 text-white" onClick={() => setActiveUnitId(u.id)}>
+                {L.detail}
               </button>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Detay paneli (modal benzeri) */}
+      {/* Detay Paneli */}
       {activeUnit && (
         <section className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
-          <div className="bg-white w-full max-w-3xl rounded-lg shadow-lg p-4">
+          <div className="bg-white w-full max-w-4xl rounded-lg shadow-lg p-4">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-bold">
-                {activeUnit.name} — {L.unitMeta}
+                {activeUnit.name} — {L.unitInfo}
               </h3>
-              <button
-                className="px-3 py-1 rounded bg-gray-200"
-                onClick={closeDetail}
-              >
-                ✖
-              </button>
+              <button className="px-3 py-1 rounded bg-gray-200" onClick={() => setActiveUnitId(null)}>✖</button>
             </div>
 
-            {/* Meta alanları */}
+            {/* Meta */}
             <div className="grid sm:grid-cols-3 gap-3 mt-3">
               <div>
                 <label className="block text-xs text-gray-500">{L.manufacturer}</label>
-                <input
-                  className="border rounded w-full p-2"
+                <input className="border rounded w-full p-2"
                   value={activeUnit.manufacturer ?? ""}
-                  onChange={(e) =>
-                    canEditUnitMeta(store.role) && updateUnit({ manufacturer: e.target.value })
-                  }
-                  disabled={!canEditUnitMeta(store.role)}
-                />
+                  disabled={!canEditMeta(store.role)}
+                  onChange={(e) => canEditMeta(store.role) && patchUnit({ manufacturer: e.target.value })} />
               </div>
               <div>
                 <label className="block text-xs text-gray-500">{L.year}</label>
-                <input
-                  className="border rounded w-full p-2"
+                <input className="border rounded w-full p-2"
                   value={activeUnit.year ?? ""}
-                  onChange={(e) =>
-                    canEditUnitMeta(store.role) && updateUnit({ year: e.target.value })
-                  }
-                  disabled={!canEditUnitMeta(store.role)}
-                />
+                  disabled={!canEditMeta(store.role)}
+                  onChange={(e) => canEditMeta(store.role) && patchUnit({ year: e.target.value })} />
               </div>
               <div>
                 <label className="block text-xs text-gray-500">{L.ndt}</label>
-                <input
-                  type="date"
-                  className="border rounded w-full p-2"
+                <input type="date" className="border rounded w-full p-2"
                   value={activeUnit.ndtDate ?? ""}
-                  onChange={(e) =>
-                    canEditUnitMeta(store.role) && updateUnit({ ndtDate: e.target.value })
-                  }
-                  disabled={!canEditUnitMeta(store.role)}
-                />
+                  disabled={!canEditMeta(store.role)}
+                  onChange={(e) => canEditMeta(store.role) && patchUnit({ ndtDate: e.target.value })} />
               </div>
             </div>
 
-            {/* Fotoğraf + Status */}
             <div className="grid sm:grid-cols-2 gap-3 mt-3">
               <div>
                 <label className="block text-xs text-gray-500">{L.photo}</label>
                 {activeUnit.imageDataUrl ? (
-                  <img
-                    src={activeUnit.imageDataUrl}
-                    alt="unit"
-                    className="w-full h-40 object-cover rounded mb-2"
-                  />
+                  <img src={activeUnit.imageDataUrl} alt="unit" className="w-full h-40 object-cover rounded mb-2" />
                 ) : (
-                  <div className="w-full h-40 bg-gray-100 rounded mb-2 grid place-items-center text-gray-400">
-                    {t(store.lang, "Fotoğraf yok", "No photo")}
-                  </div>
+                  <div className="w-full h-40 bg-gray-100 rounded mb-2 grid place-items-center text-gray-400">No Photo</div>
                 )}
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) onImageChoose(f);
-                  }}
-                />
-                <button
-                  className={`px-3 py-1 rounded ${canEditUnitMeta(store.role) ? "bg-gray-200" : "bg-gray-100 text-gray-400"}`}
-                  onClick={() => canEditUnitMeta(store.role) && fileRef.current?.click()}
-                  disabled={!canEditUnitMeta(store.role)}
-                >
-                  {L.changePhoto}
+                <input ref={imgInput} type="file" accept="image/*" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) onChooseImage(f); }} />
+                <button className={`px-3 py-1 rounded ${canEditMeta(store.role) ? "bg-gray-200" : "bg-gray-100 text-gray-400"}`}
+                  onClick={() => canEditMeta(store.role) && imgInput.current?.click()}
+                  disabled={!canEditMeta(store.role)}>
+                  {L.upload}
                 </button>
               </div>
-
               <div>
                 <label className="block text-xs text-gray-500">{L.status}</label>
-                <select
-                  className="border rounded w-full p-2"
-                  value={activeUnit.status}
-                  onChange={(e) =>
-                    canEditUnitMeta(store.role) &&
-                    updateUnit({ status: e.target.value as UnitStatus })
-                  }
-                  disabled={!canEditUnitMeta(store.role)}
-                >
-                  <option value="Aktif">{L.active}</option>
-                  <option value="Kırmızı Etiket">{L.redTag}</option>
+                <select className="border rounded w-full p-2"
+                  value={activeUnit.tag}
+                  disabled={!canEditMeta(store.role)}
+                  onChange={(e) => canEditMeta(store.role) && patchUnit({ tag: e.target.value as UnitTag })}>
+                  <option value="RED">{tagLabel(store.lang, "RED")}</option>
+                  <option value="BLUE">{tagLabel(store.lang, "BLUE")}</option>
+                  <option value="GREEN">{tagLabel(store.lang, "GREEN")}</option>
                 </select>
-
-                {/* Açılış kontrolü (Supervisor/Operatör) */}
-                <div className="mt-4 p-3 border rounded">
-                  <div className="font-semibold mb-2">{L.opening}</div>
-                  <input
-                    className="border rounded w-full p-2 mb-2"
-                    placeholder={L.signerName}
-                    value={openingSigner}
-                    onChange={(e) => setOpeningSigner(e.target.value)}
-                  />
-                  <button
-                    className={`px-3 py-1 rounded ${canDoOpening(store.role) ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-500"}`}
-                    onClick={signOpening}
-                    disabled={!canDoOpening(store.role)}
-                    title={
-                      activeUnit.status === "Aktif"
-                        ? ""
-                        : t(store.lang, L.cannotOpenWhenRed, L.cannotOpenWhenRed)
-                    }
-                  >
-                    {L.sign}
-                  </button>
-                  {activeUnit.status !== "Aktif" && (
-                    <div className="mt-2 text-xs text-red-600">
-                      {L.needsActiveForSupervisor}
-                    </div>
-                  )}
-                </div>
               </div>
             </div>
 
-            {/* Bakım sekmeleri */}
+            {/* Tabs */}
             <div className="mt-4">
               <div className="flex gap-2 mb-3">
-                {(["daily", "weekly", "monthly", "yearly"] as Frequency[]).map((f) => (
+                <button onClick={() => setTab("technical")} className={`px-3 py-1 rounded ${tab === "technical" ? "bg-blue-600 text-white" : "bg-gray-200"}`}>{L.tabs.technical}</button>
+                <button onClick={() => setTab("opening")} className={`px-3 py-1 rounded ${tab === "opening" ? "bg-blue-600 text-white" : "bg-gray-200"}`}>{L.tabs.opening}</button>
+                <button onClick={() => setTab("incident")} className={`px-3 py-1 rounded ${tab === "incident" ? "bg-blue-600 text-white" : "bg-gray-200"}`}>{L.tabs.incident}</button>
+                <button onClick={() => setTab("history")} className={`px-3 py-1 rounded ${tab === "history" ? "bg-blue-600 text-white" : "bg-gray-200"}`}>{L.tabs.history}</button>
+              </div>
+
+              {/* Teknik */}
+              {tab === "technical" && (
+                <div className="p-3 border rounded bg-gray-50">
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {(["daily","weekly","monthly","yearly"] as Frequency[]).map(f => (
+                      <button key={f} onClick={() => setFreq(f)} className={`px-3 py-1 rounded ${freq===f?"bg-blue-600 text-white":"bg-gray-200"}`}>
+                        {f==="daily"&&L.freq.daily}{f==="weekly"&&L.freq.weekly}{f==="monthly"&&L.freq.monthly}{f==="yearly"&&L.freq.yearly}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="font-semibold mb-2">{L.checklist}</div>
+                  <div className="grid gap-2">
+                    {template.map((it) => {
+                      const label = store.lang === "tr" ? it.tr : it.en;
+                      const val = ticks.find((x) => x.id === it.id)?.checked ?? false;
+                      return (
+                        <label key={it.id} className={`flex items-center gap-2 p-2 rounded ${canTechnical(store.role)?"bg-white border":"bg-gray-100 border border-dashed"}`}>
+                          <input
+                            type="checkbox"
+                            disabled={!canTechnical(store.role)}
+                            checked={val}
+                            onChange={(e) =>
+                              setTicks(prev => prev.map(x => x.id === it.id ? { ...x, checked: e.target.checked } : x))
+                            }
+                          />
+                          <span>{label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-3">
+                    <label className="block text-xs text-gray-500">{L.notes}</label>
+                    <textarea
+                      className="border rounded w-full p-2"
+                      rows={2}
+                      placeholder={t(store.lang,"Örn: 2 adet M8 civata değişti…","Ex: Replaced 2× M8 bolts…")}
+                      value={techNotes}
+                      onChange={(e)=>setTechNotes(e.target.value)}
+                      disabled={!canTechnical(store.role)}
+                    />
+                  </div>
+
+                  <div className="mt-3 grid sm:grid-cols-2 gap-2">
+                    <input
+                      className="border rounded w-full p-2"
+                      placeholder={L.signer}
+                      value={techSigner}
+                      onChange={(e)=>setTechSigner(e.target.value)}
+                      disabled={!canTechnical(store.role)}
+                    />
+                    <button
+                      className={`px-3 py-1 rounded ${canTechnical(store.role)?"bg-green-600 text-white":"bg-gray-200 text-gray-500"}`}
+                      onClick={signTechnical}
+                      disabled={!canTechnical(store.role)}
+                    >
+                      {L.signTech}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Açılış */}
+              {tab === "opening" && (
+                <div className="p-3 border rounded bg-gray-50">
+                  <div className="text-sm mb-2">
+                    {t(store.lang,"Teknik onay gereklidir (Yeşil).","Technical approval required (Green).")}
+                    {" "} {canOpenNow ? "✅" : "❌"}
+                  </div>
+                  <input className="border rounded w-full p-2 mb-2" placeholder={L.openerName}
+                    value={openerName} onChange={(e)=>setOpenerName(e.target.value)} />
                   <button
-                    key={f}
-                    onClick={() => setFreq(f)}
-                    className={`px-3 py-1 rounded ${
-                      freq === f ? "bg-blue-600 text-white" : "bg-gray-200"
-                    }`}
+                    className={`px-3 py-1 rounded ${canOpening(store.role)?"bg-blue-600 text-white":"bg-gray-200 text-gray-500"}`}
+                    onClick={signOpening}
+                    disabled={!canOpening(store.role) || !canOpenNow}
+                    title={!canOpenNow ? L.needsGreen : ""}
                   >
-                    {f === "daily" && L.daily}
-                    {f === "weekly" && L.weekly}
-                    {f === "monthly" && L.monthly}
-                    {f === "yearly" && L.yearly}
+                    {L.signOpen} ({store.role === "SUPERVISOR" ? "Supervisor" : store.role === "OPERATOR" ? "Operator" : "-"})
                   </button>
-                ))}
-              </div>
 
-              {/* Checklist */}
-              <div className="p-3 border rounded bg-gray-50">
-                <div className="font-semibold mb-2">{L.checklist}</div>
-                <div className="grid gap-2">
-                  {templateItems.map((it) => {
-                    const label = store.lang === "tr" ? it.titleTR : it.titleEN;
-                    const checked =
-                      (currentLog?.items.find((x) => x.id === it.id)?.checked ??
-                        false);
-                    return (
-                      <label
-                        key={it.id}
-                        className={`flex items-center gap-2 p-2 rounded ${
-                          canDoTechnical(store.role)
-                            ? "bg-white border"
-                            : "bg-gray-100 border border-dashed"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          disabled={!canDoTechnical(store.role)}
-                          checked={checked}
-                          onChange={(e) => {
-                            if (!currentLog) return;
-                            const items = currentLog.items.map((x) =>
-                              x.id === it.id ? { ...x, checked: e.target.checked } : x
-                            );
-                            // güvenli güncelleme
-                            if (!canDoTechnical(store.role)) return;
-                            const newLog: MaintenanceLog = { ...currentLog, items };
-                            // sadece state içinde güncelle (kaydet butonuyla persist)
-                            // geçici olarak currentLog’u recreate etmek için:
-                            setStore((s) => {
-                              // geçici: store içinde log yoksa da görüntü için tutmayacağız, Save ile yazacağız
-                              return { ...s };
-                            });
-                            // local state objesini güncellemek için küçük bir hile:
-                            // (currentLog useMemo olduğu için doğrudan set edemeyiz, checkbox'lar save'e kadar UI'da görünsün diye)
-                            (currentLog as any).items = items;
-                          }}
-                        />
-                        <span>{label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-
-                {/* Not / Parça notu */}
-                <div className="mt-3">
-                  <label className="block text-xs text-gray-500">{L.usedParts}</label>
-                  <textarea
-                    className="border rounded w-full p-2"
-                    placeholder={t(store.lang, "Örn: 2x M8 cıvata değiştirildi…", "Ex: Changed 2x M8 bolts…")}
-                    value={currentLog?.notes ?? ""}
-                    onChange={(e) => {
-                      if (!currentLog) return;
-                      if (!canDoTechnical(store.role)) return;
-                      (currentLog as any).notes = e.target.value;
-                    }}
-                    rows={2}
-                  />
-                </div>
-
-                <div className="mt-3">
-                  <button
-                    className={`px-3 py-1 rounded ${canDoTechnical(store.role) ? "bg-green-600 text-white" : "bg-gray-200 text-gray-500"}`}
-                    onClick={saveMaintenance}
-                    disabled={!canDoTechnical(store.role)}
-                  >
-                    {L.save}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Not/Soru - Cevap alanı */}
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="p-3 border rounded">
-                <div className="font-semibold mb-2">{L.notes}</div>
-                <textarea
-                  className="border rounded w-full p-2"
-                  placeholder={t(store.lang, "Teknik ekip için not/soru…", "Note/question for technical team…")}
-                  value={noteDraft}
-                  onChange={(e) => setNoteDraft(e.target.value)}
-                  disabled={!(store.role === "OPS" || store.role === "TECH_MANAGER")}
-                  rows={2}
-                />
-                <button
-                  className={`mt-2 px-3 py-1 rounded ${
-                    store.role === "OPS" || store.role === "TECH_MANAGER"
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-200 text-gray-500"
-                  }`}
-                  onClick={addNote}
-                  disabled={!(store.role === "OPS" || store.role === "TECH_MANAGER")}
-                >
-                  {L.addNote}
-                </button>
-              </div>
-
-              <div className="p-3 border rounded">
-                <div className="font-semibold mb-2">{L.reply}</div>
-                <textarea
-                  className="border rounded w-full p-2"
-                  placeholder={t(store.lang, "Cevap… (yalnız Teknik Müdür)", "Answer… (Tech Manager only)")}
-                  value={replyDraft}
-                  onChange={(e) => setReplyDraft(e.target.value)}
-                  disabled={store.role !== "TECH_MANAGER"}
-                  rows={2}
-                />
-                <button
-                  className={`mt-2 px-3 py-1 rounded ${
-                    store.role === "TECH_MANAGER"
-                      ? "bg-amber-600 text-white"
-                      : "bg-gray-200 text-gray-500"
-                  }`}
-                  onClick={() => {
-                    // en son eklenen notu cevapla (örnek akış)
-                    const lastNote = store.techNotes.find((n) => n.unitId === activeUnit.id && !n.reply);
-                    if (lastNote) answerNote(lastNote.id);
-                  }}
-                  disabled={store.role !== "TECH_MANAGER"}
-                >
-                  {L.answer}
-                </button>
-              </div>
-            </div>
-
-            {/* İlgili notların listesi */}
-            <div className="mt-4 p-3 border rounded">
-              <div className="font-semibold mb-2">{t(store.lang, "Son Notlar", "Recent Notes")}</div>
-              <div className="grid gap-2 max-h-48 overflow-auto">
-                {store.techNotes.filter((n) => n.unitId === activeUnit.id).map((n) => (
-                  <div key={n.id} className="p-2 bg-gray-50 border rounded">
-                    <div className="text-xs text-gray-500">{n.date} — {n.from === "OPS" ? "OPS" : "TECH_MANAGER"}</div>
-                    <div className="whitespace-pre-wrap">{n.text}</div>
-                    {n.reply && (
-                      <div className="mt-1 pl-3 border-l-2 border-amber-400">
-                        <div className="text-xs text-gray-500">{t(store.lang, "Cevap", "Reply")} — {n.reply.date}</div>
-                        <div className="whitespace-pre-wrap">{n.reply.text}</div>
+                  <div className="mt-3 grid sm:grid-cols-2 gap-2">
+                    <div className="p-2 border rounded bg-white">
+                      <div className="text-xs text-gray-500">Supervisor</div>
+                      <div className="text-sm">
+                        {todaysOpenings.sup ? `${todaysOpenings.sup.name} — ${new Date(todaysOpenings.sup.signedAt).toLocaleTimeString()}` : t(store.lang,"İmza yok","No sign")}
                       </div>
-                    )}
+                    </div>
+                    <div className="p-2 border rounded bg-white">
+                      <div className="text-xs text-gray-500">Operator</div>
+                      <div className="text-sm">
+                        {todaysOpenings.op ? `${todaysOpenings.op.name} — ${new Date(todaysOpenings.op.signedAt).toLocaleTimeString()}` : t(store.lang,"İmza yok","No sign")}
+                      </div>
+                    </div>
                   </div>
-                ))}
-                {store.techNotes.filter((n) => n.unitId === activeUnit.id).length === 0 && (
-                  <div className="text-sm text-gray-500">
-                    {t(store.lang, "Henüz not yok.", "No notes yet.")}
+                </div>
+              )}
+
+              {/* Arıza */}
+              {tab === "incident" && (
+                <div className="p-3 border rounded bg-gray-50">
+                  <div className="flex items-center gap-2 mb-3">
+                    <button className="px-3 py-1 rounded bg-red-600 text-white" onClick={openIncident} disabled={hasOpenIncident}>
+                      {L.openIncident}
+                    </button>
+                    {!hasOpenIncident && <span className="text-sm text-gray-600">{L.noOpenIncident}</span>}
                   </div>
-                )}
-              </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs text-gray-500">{L.cause}</label>
+                      <textarea className="border rounded w-full p-2" rows={2}
+                        value={incidentCause} onChange={(e)=>setIncidentCause(e.target.value)}
+                        placeholder={t(store.lang,"Örn: Sensör arızası","e.g., Sensor fault")} />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500">{L.fix}</label>
+                      <textarea className="border rounded w-full p-2" rows={2}
+                        value={incidentFix} onChange={(e)=>setIncidentFix(e.target.value)}
+                        placeholder={t(store.lang,"Örn: Sensör değişimi yapıldı","e.g., Replaced sensor")} />
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <button className="px-3 py-1 rounded bg-green-600 text-white" onClick={closeIncident}>
+                      {L.closeIncident}
+                    </button>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="font-semibold mb-2">{t(store.lang,"Arıza Geçmişi","Incident History")}</div>
+                    <div className="grid gap-2 max-h-48 overflow-auto">
+                      {unitIncidents.length === 0 && <div className="text-sm text-gray-500">-</div>}
+                      {unitIncidents.map((i) => (
+                        <div key={i.id} className="p-2 bg-white border rounded">
+                          <div className="text-xs text-gray-500">
+                            {new Date(i.openedAt).toLocaleString()} — {t(store.lang,"Açan:","Opened by:")} {i.openedBy}
+                            {i.closedAt ? ` → ${new Date(i.closedAt).toLocaleString()}` : " (open)"}
+                          </div>
+                          {i.cause && <div><b>{t(store.lang,"Neden:","Cause:")}</b> {i.cause}</div>}
+                          {i.fix && <div><b>{t(store.lang,"Çözüm:","Fix:")}</b> {i.fix}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Geçmiş */}
+              {tab === "history" && (
+                <div className="p-3 border rounded bg-gray-50">
+                  <div className="font-semibold mb-2">{t(store.lang,"Bugünkü Kayıtlar","Today's Records")}</div>
+                  <div className="grid gap-2">
+                    <div className="p-2 bg-white border rounded">
+                      <div className="text-xs text-gray-500">{t(store.lang,"Teknik İmzalar","Technical Signs")}</div>
+                      <ul className="list-disc list-inside text-sm">
+                        {store.maintenance.filter(m => m.unitId === activeUnit.id && m.date === day).map((m,idx)=>(
+                          <li key={idx}>
+                            {t(store.lang,"Sıklık","Freq")}: {m.frequency} — {m.signedBy} ({m.role}) @ {new Date(m.signedAt).toLocaleTimeString()}
+                          </li>
+                        ))}
+                        {store.maintenance.filter(m => m.unitId === activeUnit.id && m.date === day).length===0 && <li>-</li>}
+                      </ul>
+                    </div>
+                    <div className="p-2 bg-white border rounded">
+                      <div className="text-xs text-gray-500">{t(store.lang,"Açılış İmzaları","Opening Signs")}</div>
+                      <ul className="list-disc list-inside text-sm">
+                        {store.openings.filter(o => o.unitId === activeUnit.id && o.date === day).map((o,idx)=>(
+                          <li key={idx}>{o.role}: {o.name} @ {new Date(o.signedAt).toLocaleTimeString()}</li>
+                        ))}
+                        {store.openings.filter(o => o.unitId === activeUnit.id && o.date === day).length===0 && <li>-</li>}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </section>
